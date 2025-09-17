@@ -1,0 +1,322 @@
+name: Deploy Weather App to AWS EKS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  # Job 1: Deploy base infrastructure (VPC, ECR)
+  base_infrastructure:
+    name: 'Deploy Base Infrastructure'
+    runs-on: ubuntu-latest
+    outputs:
+      vpc_id: ${{ steps.outputs.outputs.vpc_id }}
+      ecr_registry: ${{ steps.outputs.outputs.ecr_registry }}
+      project_name: ${{ steps.outputs.outputs.project_name }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+        terraform_wrapper: false
+
+    - name: Terraform Init
+      working-directory: ./infra
+      run: terraform init
+
+    - name: Terraform Plan - Base Infrastructure
+      working-directory: ./infra
+      run: terraform plan -target=module.vpc -target=module.ecr
+
+    - name: Terraform Apply - Base Infrastructure (only on main branch)
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      working-directory: ./infra
+      run: terraform apply -auto-approve -target=module.vpc -target=module.ecr
+
+    - name: Get Base Infrastructure Outputs
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      id: outputs
+      working-directory: ./infra
+      run: |
+        echo "vpc_id=$(terraform output -raw vpc_id)" >> $GITHUB_OUTPUT
+        echo "ecr_registry=$(terraform output -raw ecr_registry_url)" >> $GITHUB_OUTPUT
+        echo "project_name=$(terraform output -raw project_name)" >> $GITHUB_OUTPUT
+
+  # Job 2: Deploy EKS cluster
+  eks_infrastructure:
+    name: 'Deploy EKS Cluster'
+    runs-on: ubuntu-latest
+    needs: base_infrastructure
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    outputs:
+      cluster_name: ${{ steps.outputs.outputs.cluster_name }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+        terraform_wrapper: false
+
+    - name: Terraform Init
+      working-directory: ./infra
+      run: terraform init
+
+    - name: Terraform Plan - EKS
+      working-directory: ./infra
+      run: terraform plan -target=module.eks
+
+    - name: Terraform Apply - EKS
+      working-directory: ./infra
+      run: terraform apply -auto-approve -target=module.eks
+
+    - name: Get EKS Outputs
+      id: outputs
+      working-directory: ./infra
+      run: |
+        echo "cluster_name=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
+
+  # Job 3: Deploy IAM roles (depends on EKS OIDC)
+  iam_infrastructure:
+    name: 'Deploy IAM Roles'
+    runs-on: ubuntu-latest
+    needs: [base_infrastructure, eks_infrastructure]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    outputs:
+      alb_role_arn: ${{ steps.outputs.outputs.alb_role_arn }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+        terraform_wrapper: false
+
+    - name: Terraform Init
+      working-directory: ./infra
+      run: terraform init
+
+    - name: Terraform Plan - IAM Roles
+      working-directory: ./infra
+      run: terraform plan -target=module.iam
+
+    - name: Terraform Apply - IAM Roles
+      working-directory: ./infra
+      run: terraform apply -auto-approve -target=module.iam
+
+    - name: Get IAM Outputs
+      id: outputs
+      working-directory: ./infra
+      run: |
+        echo "alb_role_arn=$(terraform output -raw alb_controller_role_arn)" >> $GITHUB_OUTPUT
+
+  # Job 4: Build and push Docker images
+  build:
+    name: 'Build Docker Images'
+    runs-on: ubuntu-latest
+    needs: [base_infrastructure, eks_infrastructure]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to ECR
+      run: aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ needs.base_infrastructure.outputs.ecr_registry }}
+
+    - name: Build Frontend
+      working-directory: ./frontend
+      env:
+        REACT_APP_API_URL: /api
+      run: |
+        echo "Building React app with API_URL=/api"
+        npm install
+        npm run build
+        echo "✅ Frontend built successfully"
+
+    - name: Build and Push Frontend Image
+      working-directory: ./frontend
+      run: |
+        docker build -t ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:frontend-${{ github.sha }} .
+        docker push ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:frontend-${{ github.sha }}
+        echo "✅ Frontend image pushed"
+
+    - name: Build and Push Backend Image
+      working-directory: ./backend
+      run: |
+        docker build -t ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:backend-${{ github.sha }} .
+        docker push ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:backend-${{ github.sha }}
+        echo "✅ Backend image pushed"
+
+  # Job 5: Deploy to Kubernetes
+  deploy:
+    name: 'Deploy to EKS'
+    runs-on: ubuntu-latest
+    needs: [base_infrastructure, eks_infrastructure, iam_infrastructure, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Install kubectl
+      run: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+        echo "✅ kubectl installed"
+
+    - name: Install Helm
+      run: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        echo "✅ Helm installed"
+
+    - name: Connect to EKS cluster
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ needs.infrastructure.outputs.cluster_name }}
+        kubectl get nodes
+        echo "✅ Connected to EKS cluster"
+
+    - name: Install AWS Load Balancer Controller
+      run: |
+        # Add Helm repo
+        helm repo add eks https://aws.github.io/eks-charts
+        helm repo update
+        
+        # Install or upgrade ALB controller
+        helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+          -n kube-system \
+          --set serviceAccount.create=true \
+          --set serviceAccount.name=aws-load-balancer-controller \
+          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=${{ needs.infrastructure.outputs.alb_role_arn }} \
+          --set clusterName=${{ needs.infrastructure.outputs.cluster_name }} \
+          --set region=${{ secrets.AWS_REGION }} \
+          --set vpcId=${{ needs.infrastructure.outputs.vpc_id }} \
+          --wait
+        echo "✅ AWS Load Balancer Controller installed"
+
+    - name: Create namespace and secrets
+      run: |
+        # Create namespace
+        kubectl create namespace prod-team --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Create API key secret
+        kubectl create secret generic weather-secrets \
+          --from-literal=OPENWEATHER_API_KEY=${{ secrets.OPENWEATHER_API_KEY }} \
+          -n prod-team \
+          --dry-run=client -o yaml | kubectl apply -f -
+        echo "✅ Namespace and secrets created"
+
+    - name: Update image tags in manifests
+      run: |
+        # Replace image tags with current commit SHA - using dynamic values from Terraform
+        sed -i "s|IMAGE_PLACEHOLDER_FRONTEND|${{ needs.infrastructure.outputs.ecr_registry }}/${{ needs.infrastructure.outputs.project_name }}:frontend-${{ github.sha }}|g" k8s/frontend-deployment.yaml
+        sed -i "s|IMAGE_PLACEHOLDER_BACKEND|${{ needs.infrastructure.outputs.ecr_registry }}/${{ needs.infrastructure.outputs.project_name }}:backend-${{ github.sha }}|g" k8s/backend-deployment.yaml
+        echo "✅ Image tags updated"
+
+    - name: Deploy applications
+      run: |
+        kubectl apply -f k8s/ -n prod-team
+        echo "✅ Applications deployed"
+
+    - name: Wait for deployments
+      run: |
+        echo "Waiting for deployments to be ready..."
+        kubectl rollout status deployment/weather-frontend -n prod-team --timeout=300s
+        kubectl rollout status deployment/weather-backend -n prod-team --timeout=300s
+        echo "✅ All deployments ready"
+
+    - name: Get application URL
+      run: |
+        echo "Waiting for load balancer to be ready..."
+        sleep 60
+        
+        ALB_URL=$(kubectl get ingress weather-app-ingress -n prod-team -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        
+        if [ -n "$ALB_URL" ]; then
+          echo "🚀 Application deployed successfully!"
+          echo "📱 Frontend URL: http://$ALB_URL"
+          echo "🔧 API Health: http://$ALB_URL/api/health"
+          echo "🌤️  Weather API: http://$ALB_URL/api/weather/London"
+        else
+          echo "⚠️ Load balancer not ready yet. Check ingress status manually."
+        fi
+
+    - name: Run health checks
+      run: |
+        echo "Running health checks..."
+        sleep 30
+        
+        ALB_URL=$(kubectl get ingress weather-app-ingress -n prod-team -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        
+        if [ -n "$ALB_URL" ]; then
+          # Test API health
+          if curl -f -s "http://$ALB_URL/api/health" > /dev/null; then
+            echo "✅ API health check passed"
+          else
+            echo "❌ API health check failed"
+            exit 1
+          fi
+          
+          # Test weather endpoint
+          if curl -f -s "http://$ALB_URL/api/weather/London" > /dev/null; then
+            echo "✅ Weather API check passed"
+          else
+            echo "❌ Weather API check failed"
+            exit 1
+          fi
+          
+          echo "🎉 All health checks passed! Your app is live!"
+        else
+          echo "⚠️ Skipping health checks - load balancer not ready"
+        fi

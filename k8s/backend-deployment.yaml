@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weather-backend
+  namespace: prod-team
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: weather-backend
+  template:
+    metadata:
+      labels:
+        app: weather-backend
+         
+    spec:
+      containers:
+      - name: weather-backend
+        image: IMAGE_PLACEHOLDER_BACKEND
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        # YOUR SECRET IS HERE - I kept it exactly as you had it!
+        - name: OPENWEATHER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: weather-secrets
+              key: OPENWEATHER_API_KEY
+        # Additional environment variables
+        - name: PORT
+          value: "8080"
+        - name: NODE_ENV
+          value: "production"
+        # for better health Checking
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
