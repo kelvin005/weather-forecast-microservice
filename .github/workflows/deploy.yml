@@ -209,7 +209,16 @@ jobs:
         aws-region: us-east-2
 
     - name: Login to ECR
-      run: aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin ${{ needs.base_infrastructure.outputs.ecr_registry }}
+      run: |
+       ECR_REGISTRY="${{ needs.base_infrastructure.outputs.ecr_registry }}"
+         echo "ECR Registry: $ECR_REGISTRY"
+    
+        if [ -z "$ECR_REGISTRY" ]; then
+        echo "Error: ECR registry URL is empty"
+        exit 1
+       fi
+    
+       aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin $ECR_REGISTRY
 
     - name: Build Frontend
       working-directory: ./frontend
