@@ -19,7 +19,7 @@ output "vpc_id" {
 }
 
 output "project_name" {
-  value = var.project_name
+  value = "weather-forcast-application"
 }
 
 
