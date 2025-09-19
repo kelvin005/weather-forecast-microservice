@@ -206,7 +206,7 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+        aws-region: us-east-2
 
     - name: Login to ECR
       run: aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin ${{ needs.base_infrastructure.outputs.ecr_registry }}
@@ -251,7 +251,7 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+        aws-region: us-east-2
 
     - name: Install kubectl
       run: |
