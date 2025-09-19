@@ -25,7 +25,7 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: us-east-2
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
@@ -73,7 +73,7 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: us-east-2
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
@@ -117,7 +117,7 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: us-east-2
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
@@ -162,7 +162,7 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Login to ECR
-      run: aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ needs.base_infrastructure.outputs.ecr_registry }}
+      run: aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin ${{ needs.base_infrastructure.outputs.ecr_registry }}
 
     - name: Build Frontend
       working-directory: ./frontend
@@ -237,7 +237,7 @@ jobs:
           --set serviceAccount.name=aws-load-balancer-controller \
           --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=${{ needs.infrastructure.outputs.alb_role_arn }} \
           --set clusterName=${{ needs.infrastructure.outputs.cluster_name }} \
-          --set region=${{ secrets.AWS_REGION }} \
+          --set region=us-east-2 \
           --set vpcId=${{ needs.infrastructure.outputs.vpc_id }} \
           --wait
         echo "✅ AWS Load Balancer Controller installed"
