@@ -39,12 +39,12 @@ jobs:
 
     - name: Terraform Plan - Base Infrastructure
       working-directory: ./infra
-      run: terraform plan -target=module.vpc -target=module.ecr
+      run: terraform plan -target=module.vpc -target=module.ecr -lock-timeout=10m
 
     - name: Terraform Apply - Base Infrastructure (only on main branch)
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       working-directory: ./infra
-      run: terraform apply -auto-approve -target=module.vpc -target=module.ecr
+      run: terraform apply -auto-approve -target=module.vpc -target=module.ecr -lock-timeout=10m
 
     - name: Get Base Infrastructure Outputs
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -87,11 +87,11 @@ jobs:
 
     - name: Terraform Plan - EKS
       working-directory: ./infra
-      run: terraform plan -target=module.eks
+      run: terraform plan -target=module.eks -lock-timeout=10m
 
     - name: Terraform Apply - EKS
       working-directory: ./infra
-      run: terraform apply -auto-approve -target=module.eks
+      run: terraform apply -auto-approve -target=module.eks -lock-timeout=10m
 
     - name: Get EKS Outputs
       id: outputs
@@ -131,11 +131,11 @@ jobs:
 
     - name: Terraform Plan - IAM Roles
       working-directory: ./infra
-      run: terraform plan -target=module.iam
+      run: terraform plan -target=module.iam -lock-timeout=10m
 
     - name: Terraform Apply - IAM Roles
       working-directory: ./infra
-      run: terraform apply -auto-approve -target=module.iam
+      run: terraform apply -auto-approve -target=module.iam -lock-timeout=10m
 
     - name: Get IAM Outputs
       id: outputs
@@ -175,14 +175,14 @@ jobs:
       working-directory: ./infra
       run: |
         echo "Applying any remaining Terraform resources..."
-        terraform apply -auto-approve
+        terraform apply -auto-approve -lock-timeout=10m
         echo "✅ Complete infrastructure deployment finished"
 
   # Job 5: Build and push Docker images
   build:
     name: 'Build Docker Images'
     runs-on: ubuntu-latest
-    needs: [base_infrastructure, eks_infrastructure]
+    needs: [base_infrastructure, complete_infrastructure]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     
     steps:
@@ -223,11 +223,11 @@ jobs:
         docker push ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:backend-${{ github.sha }}
         echo "✅ Backend image pushed"
 
-  # Job 5: Deploy to Kubernetes
+  # Job 6: Deploy to Kubernetes
   deploy:
     name: 'Deploy to EKS'
     runs-on: ubuntu-latest
-    needs: [base_infrastructure, eks_infrastructure, iam_infrastructure, build]
+    needs: [base_infrastructure, eks_infrastructure, iam_infrastructure, complete_infrastructure, build]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     
     steps:
