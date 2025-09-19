@@ -39,12 +39,12 @@ jobs:
 
     - name: Terraform Plan - Base Infrastructure
       working-directory: ./infra
-      run: terraform plan -target=module.vpc -target=module.ecr -lock-timeout=10m
+      run: terraform plan -target=module.vpc -target=module.ecr 
 
     - name: Terraform Apply - Base Infrastructure (only on main branch)
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       working-directory: ./infra
-      run: terraform apply -auto-approve -target=module.vpc -target=module.ecr -lock-timeout=10m
+      run: terraform apply -auto-approve -target=module.vpc -target=module.ecr 
 
     - name: Get Base Infrastructure Outputs
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
