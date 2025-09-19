@@ -143,7 +143,42 @@ jobs:
       run: |
         echo "alb_role_arn=$(terraform output -raw alb_controller_role_arn)" >> $GITHUB_OUTPUT
 
-  # Job 4: Build and push Docker images
+  # Job 4: Complete infrastructure deployment
+  complete_infrastructure:
+    name: 'Complete Infrastructure Deployment'
+    runs-on: ubuntu-latest
+    needs: [base_infrastructure, eks_infrastructure, iam_infrastructure]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-2
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+        terraform_wrapper: false
+
+    - name: Terraform Init
+      working-directory: ./infra
+      run: terraform init
+
+    - name: Final Terraform Apply - All Remaining Resources
+      working-directory: ./infra
+      run: |
+        echo "Applying any remaining Terraform resources..."
+        terraform apply -auto-approve
+        echo "✅ Complete infrastructure deployment finished"
+
+  # Job 5: Build and push Docker images
   build:
     name: 'Build Docker Images'
     runs-on: ubuntu-latest
