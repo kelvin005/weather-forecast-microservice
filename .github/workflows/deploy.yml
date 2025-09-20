@@ -208,17 +208,43 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: us-east-2
 
-    - name: Login to ECR
+    - name: Setup ECR and Login
       run: |
-       ECR_REGISTRY="${{ needs.base_infrastructure.outputs.ecr_registry }}"
-         echo "ECR Registry: $ECR_REGISTRY"
-    
-        if [ -z "$ECR_REGISTRY" ]; then
-        echo "Error: ECR registry URL is empty"
-        exit 1
-       fi
-    
-       aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin $ECR_REGISTRY
+        echo "=== Setting up ECR Registry ==="
+        
+        # Get AWS account ID directly
+        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com"
+        
+        echo "AWS Account ID: $AWS_ACCOUNT_ID"
+        echo "ECR Registry: $ECR_REGISTRY"
+        
+        # Store in environment for later steps
+        echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
+        echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+        
+        # Login to ECR
+        echo "Logging into ECR..."
+        aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+        echo "✅ Successfully logged into ECR"
+
+    - name: Set Project Name
+      run: |
+        PROJECT_NAME="${{ needs.base_infrastructure.outputs.project_name }}"
+        if [ -z "$PROJECT_NAME" ]; then
+          PROJECT_NAME="weather-forecast-microservice"
+          echo "Using default project name: $PROJECT_NAME"
+        else
+          echo "Using project name from Terraform: $PROJECT_NAME"
+        fi
+        echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
+
+    - name: Create ECR Repository
+      run: |
+        echo "Creating ECR repository if it doesn't exist..."
+        aws ecr describe-repositories --repository-names "$PROJECT_NAME" --region us-east-2 || \
+        aws ecr create-repository --repository-name "$PROJECT_NAME" --region us-east-2
+        echo "✅ ECR repository ready"
 
     - name: Build Frontend
       working-directory: ./frontend
@@ -233,16 +259,22 @@ jobs:
     - name: Build and Push Frontend Image
       working-directory: ./frontend
       run: |
-        docker build -t ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:frontend-${{ github.sha }} .
-        docker push ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:frontend-${{ github.sha }}
-        echo "✅ Frontend image pushed"
+        FRONTEND_TAG="$ECR_REGISTRY/$PROJECT_NAME:frontend-${{ github.sha }}"
+        echo "Building frontend image: $FRONTEND_TAG"
+        
+        docker build -t "$FRONTEND_TAG" .
+        docker push "$FRONTEND_TAG"
+        echo "✅ Frontend image pushed: $FRONTEND_TAG"
 
     - name: Build and Push Backend Image
       working-directory: ./backend
       run: |
-        docker build -t ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:backend-${{ github.sha }} .
-        docker push ${{ needs.base_infrastructure.outputs.ecr_registry }}/${{ needs.base_infrastructure.outputs.project_name }}:backend-${{ github.sha }}
-        echo "✅ Backend image pushed"
+        BACKEND_TAG="$ECR_REGISTRY/$PROJECT_NAME:backend-${{ github.sha }}"
+        echo "Building backend image: $BACKEND_TAG"
+        
+        docker build -t "$BACKEND_TAG" .
+        docker push "$BACKEND_TAG"
+        echo "✅ Backend image pushed: $BACKEND_TAG"
 
   # Job 6: Deploy to Kubernetes
   deploy:
@@ -276,7 +308,7 @@ jobs:
 
     - name: Connect to EKS cluster
       run: |
-        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ needs.infrastructure.outputs.cluster_name }}
+        aws eks update-kubeconfig --region us-east-2 --name ${{ needs.eks_infrastructure.outputs.cluster_name }}
         kubectl get nodes
         echo "✅ Connected to EKS cluster"
 
@@ -291,10 +323,10 @@ jobs:
           -n kube-system \
           --set serviceAccount.create=true \
           --set serviceAccount.name=aws-load-balancer-controller \
-          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=${{ needs.infrastructure.outputs.alb_role_arn }} \
-          --set clusterName=${{ needs.infrastructure.outputs.cluster_name }} \
+          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=${{ needs.iam_infrastructure.outputs.alb_role_arn }} \
+          --set clusterName=${{ needs.eks_infrastructure.outputs.cluster_name }} \
           --set region=us-east-2 \
-          --set vpcId=${{ needs.infrastructure.outputs.vpc_id }} \
+          --set vpcId=${{ needs.base_infrastructure.outputs.vpc_id }} \
           --wait
         echo "✅ AWS Load Balancer Controller installed"
 
@@ -310,11 +342,25 @@ jobs:
           --dry-run=client -o yaml | kubectl apply -f -
         echo "✅ Namespace and secrets created"
 
+    - name: Setup ECR Registry for Kubernetes
+      run: |
+        # Get AWS account ID and set up ECR registry for k8s manifests
+        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com"
+        PROJECT_NAME="${{ needs.base_infrastructure.outputs.project_name }}"
+        
+        if [ -z "$PROJECT_NAME" ]; then
+          PROJECT_NAME="weather-forecast-microservice"
+        fi
+        
+        echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
+        echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
+
     - name: Update image tags in manifests
       run: |
-        # Replace image tags with current commit SHA - using dynamic values from Terraform
-        sed -i "s|IMAGE_PLACEHOLDER_FRONTEND|${{ needs.infrastructure.outputs.ecr_registry }}/${{ needs.infrastructure.outputs.project_name }}:frontend-${{ github.sha }}|g" k8s/frontend-deployment.yaml
-        sed -i "s|IMAGE_PLACEHOLDER_BACKEND|${{ needs.infrastructure.outputs.ecr_registry }}/${{ needs.infrastructure.outputs.project_name }}:backend-${{ github.sha }}|g" k8s/backend-deployment.yaml
+        # Replace image tags with current commit SHA
+        sed -i "s|IMAGE_PLACEHOLDER_FRONTEND|$ECR_REGISTRY/$PROJECT_NAME:frontend-${{ github.sha }}|g" k8s/frontend-deployment.yaml
+        sed -i "s|IMAGE_PLACEHOLDER_BACKEND|$ECR_REGISTRY/$PROJECT_NAME:backend-${{ github.sha }}|g" k8s/backend-deployment.yaml
         echo "✅ Image tags updated"
 
     - name: Deploy applications
