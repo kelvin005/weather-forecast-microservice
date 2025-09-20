@@ -308,27 +308,73 @@ jobs:
 
     - name: Connect to EKS cluster
       run: |
-        aws eks update-kubeconfig --region us-east-2 --name ${{ needs.eks_infrastructure.outputs.cluster_name }}
+        aws eks update-kubeconfig --region us-east-2 --name weather-forcast-application-eks
         kubectl get nodes
         echo "✅ Connected to EKS cluster"
 
+    - name: Setup EKS OIDC Provider
+      run: |
+        echo "Setting up OIDC provider for EKS cluster..."
+        
+        # Get the OIDC issuer URL
+        OIDC_URL=$(aws eks describe-cluster --name ${{ needs.eks_infrastructure.outputs.cluster_name }} --region us-east-2 --query "cluster.identity.oidc.issuer" --output text)
+        echo "OIDC URL: $OIDC_URL"
+        
+        # Extract the OIDC ID
+        OIDC_ID=$(echo $OIDC_URL | cut -d '/' -f 5)
+        echo "OIDC ID: $OIDC_ID"
+        
+        # Check if OIDC provider already exists
+        if aws iam list-open-id-connect-providers --query "OpenIDConnectProviderList[?ends_with(Arn, ':oidc-provider/$OIDC_URL')]" --output text | grep -q "$OIDC_ID"; then
+          echo "✅ OIDC provider already exists"
+        else
+          echo "Creating OIDC provider..."
+          
+          # Get the certificate thumbprint
+          THUMBPRINT=$(echo | openssl s_client -servername oidc.eks.us-east-2.amazonaws.com -showcerts -connect oidc.eks.us-east-2.amazonaws.com:443 2>&- | tac | sed -n '/-----END CERTIFICATE-----/,/-----BEGIN CERTIFICATE-----/p; /-----BEGIN CERTIFICATE-----/q' | tac | openssl x509 -fingerprint -sha1 -noout | sed 's/://g' | awk -F= '{print tolower($2)}')
+          
+          # Create the OIDC provider
+          aws iam create-open-id-connect-provider \
+            --url $OIDC_URL \
+            --client-id-list sts.amazonaws.com \
+            --thumbprint-list $THUMBPRINT \
+            --region us-east-2 || echo "OIDC provider might already exist"
+          
+          echo "✅ OIDC provider created/verified"
+        fi
+
     - name: Install AWS Load Balancer Controller
       run: |
+        echo "Installing AWS Load Balancer Controller..."
+        echo "Cluster: ${{ needs.eks_infrastructure.outputs.cluster_name }}"
+        echo "IAM Role: ${{ needs.iam_infrastructure.outputs.alb_role_arn }}"
+        echo "VPC ID: ${{ needs.base_infrastructure.outputs.vpc_id }}"
+        
         # Add Helm repo
         helm repo add eks https://aws.github.io/eks-charts
         helm repo update
         
-        # Install or upgrade ALB controller
-        helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+        # Clean up any existing installation
+        helm uninstall aws-load-balancer-controller -n kube-system --ignore-not-found || echo "No existing installation"
+        
+        # Install ALB controller with Helm managing the service account
+        helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
           -n kube-system \
+          --set clusterName=${{ needs.eks_infrastructure.outputs.cluster_name }} \
           --set serviceAccount.create=true \
           --set serviceAccount.name=aws-load-balancer-controller \
           --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=${{ needs.iam_infrastructure.outputs.alb_role_arn }} \
-          --set clusterName=${{ needs.eks_infrastructure.outputs.cluster_name }} \
           --set region=us-east-2 \
           --set vpcId=${{ needs.base_infrastructure.outputs.vpc_id }} \
-          --wait
+          --wait \
+          --timeout=10m
+        
         echo "✅ AWS Load Balancer Controller installed"
+        
+        # Verify installation
+        kubectl get deployment aws-load-balancer-controller -n kube-system
+        kubectl rollout status deployment aws-load-balancer-controller -n kube-system --timeout=300s
+        echo "✅ ALB Controller is ready and running"
 
     - name: Setup ECR Registry for Kubernetes
       run: |
