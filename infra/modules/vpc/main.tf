@@ -21,7 +21,7 @@ resource "aws_subnet" "public1" {
   tags = {
     Name                          = "eks-public-subnet-1"
     "kubernetes.io/role/elb"          = "1"
-    "kubernetes.io/cluster/task-manager-eks" = "shared"
+    "kubernetes.io/cluster/weather-forcast-application-eks" = "shared"
   }
 }
 
@@ -33,7 +33,7 @@ resource "aws_subnet" "public2" {
   tags = {
     Name                          = "eks-public-subnet-2"
     "kubernetes.io/role/elb"          = "1"
-    "kubernetes.io/cluster/task-manager-eks" = "shared"
+    "kubernetes.io/cluster/weather-forcast-application-eks" = "shared"
   }
 }
 
