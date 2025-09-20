@@ -330,18 +330,6 @@ jobs:
           --wait
         echo "✅ AWS Load Balancer Controller installed"
 
-    - name: Create namespace and secrets
-      run: |
-        # Create namespace
-        kubectl create namespace prod-team --dry-run=client -o yaml | kubectl apply -f -
-        
-        # Create API key secret
-        kubectl create secret generic weather-secrets \
-          --from-literal=OPENWEATHER_API_KEY=${{ secrets.OPENWEATHER_API_KEY }} \
-          -n prod-team \
-          --dry-run=client -o yaml | kubectl apply -f -
-        echo "✅ Namespace and secrets created"
-
     - name: Setup ECR Registry for Kubernetes
       run: |
         # Get AWS account ID and set up ECR registry for k8s manifests
@@ -356,24 +344,137 @@ jobs:
         echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
         echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
 
+    - name: Update secret with API key
+      run: |
+        echo "Updating secret with API key..."
+        
+        # Base64 encode the API key
+        ENCODED_API_KEY=$(echo -n "${{ secrets.OPENWEATHER_API_KEY }}" | base64)
+        
+        # Replace placeholder in secret.yaml
+        if [ -f "k8s/secret.yaml" ]; then
+          sed -i "s|OPENWEATHER_API_KEY_BASE64_PLACEHOLDER|$ENCODED_API_KEY|g" k8s/secret.yaml
+          echo "✅ Secret updated with API key"
+        else
+          echo "⚠️ k8s/secret.yaml not found"
+        fi
+
     - name: Update image tags in manifests
       run: |
-        # Replace image tags with current commit SHA
+        echo "Updating image tags in manifests..."
+        
+        # Replace image placeholders with actual ECR image tags
         sed -i "s|IMAGE_PLACEHOLDER_FRONTEND|$ECR_REGISTRY/$PROJECT_NAME:frontend-${{ github.sha }}|g" k8s/frontend-deployment.yaml
         sed -i "s|IMAGE_PLACEHOLDER_BACKEND|$ECR_REGISTRY/$PROJECT_NAME:backend-${{ github.sha }}|g" k8s/backend-deployment.yaml
+        
+        echo "Frontend image: $ECR_REGISTRY/$PROJECT_NAME:frontend-${{ github.sha }}"
+        echo "Backend image: $ECR_REGISTRY/$PROJECT_NAME:backend-${{ github.sha }}"
         echo "✅ Image tags updated"
 
-    - name: Deploy applications
+    - name: Deploy Kubernetes resources with retry
       run: |
-        kubectl apply -f k8s/ -n prod-team
-        echo "✅ Applications deployed"
+        echo "Deploying Kubernetes resources with retry logic..."
+        
+        # Function to deploy with retry
+        deploy_with_retry() {
+          local max_attempts=3
+          local attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "🚀 Deployment attempt $attempt of $max_attempts"
+            
+            if kubectl apply -f k8s/ 2>&1 | tee /tmp/kubectl_output.log; then
+              echo "✅ Kubernetes resources deployed successfully on attempt $attempt"
+              return 0
+            else
+              echo "❌ Deployment attempt $attempt failed"
+              
+              # Show what failed
+              cat /tmp/kubectl_output.log
+              
+              # If namespace doesn't exist, create it first
+              if grep -q "namespace.*not found" /tmp/kubectl_output.log; then
+                echo "🔧 Namespace issue detected, trying to create namespace first..."
+                kubectl create namespace prod-team --dry-run=client -o yaml | kubectl apply -f - || true
+                sleep 5
+              fi
+              
+              # Wait before retry
+              if [ $attempt -lt $max_attempts ]; then
+                echo "⏳ Waiting 10 seconds before retry..."
+                sleep 10
+              fi
+            fi
+            
+            ((attempt++))
+          done
+          
+          echo "❌ All deployment attempts failed"
+          return 1
+        }
+        
+        # Try ordered deployment first
+        echo "📋 Trying ordered deployment..."
+        
+        # 1. Deploy namespace first (if exists)
+        if [ -f "k8s/namespace.yaml" ]; then
+          kubectl apply -f k8s/namespace.yaml || echo "⚠️ Namespace deployment failed, continuing..."
+          sleep 2
+        fi
+        
+        # 2. Deploy secrets (if exists)
+        if [ -f "k8s/secret.yaml" ]; then
+          kubectl apply -f k8s/secret.yaml || echo "⚠️ Secret deployment failed, continuing..."
+          sleep 2
+        fi
+        
+        # 3. Deploy everything else
+        deploy_with_retry
+        
+        echo "✅ Kubernetes deployment completed"
 
     - name: Wait for deployments
       run: |
         echo "Waiting for deployments to be ready..."
-        kubectl rollout status deployment/weather-frontend -n prod-team --timeout=300s
-        kubectl rollout status deployment/weather-backend -n prod-team --timeout=300s
-        echo "✅ All deployments ready"
+        
+        # Wait with timeout and retry logic
+        wait_for_deployment() {
+          local deployment_name=$1
+          local max_attempts=3
+          local attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "⏳ Waiting for $deployment_name (attempt $attempt/$max_attempts)..."
+            
+            if kubectl rollout status deployment/$deployment_name -n prod-team --timeout=300s; then
+              echo "✅ $deployment_name is ready"
+              return 0
+            else
+              echo "❌ $deployment_name failed to become ready on attempt $attempt"
+              
+              # Show pod status for debugging
+              kubectl get pods -n prod-team -l app=$deployment_name || true
+              kubectl describe deployment $deployment_name -n prod-team || true
+              
+              if [ $attempt -lt $max_attempts ]; then
+                echo "🔄 Restarting $deployment_name deployment..."
+                kubectl rollout restart deployment/$deployment_name -n prod-team || true
+                sleep 30
+              fi
+            fi
+            
+            ((attempt++))
+          done
+          
+          echo "❌ $deployment_name failed to become ready after all attempts"
+          return 1
+        }
+        
+        # Wait for both deployments
+        wait_for_deployment "weather-frontend"
+        wait_for_deployment "weather-backend"
+        
+        echo "✅ All deployments are ready"
 
     - name: Get application URL
       run: |
@@ -388,34 +489,74 @@ jobs:
           echo "🔧 API Health: http://$ALB_URL/api/health"
           echo "🌤️  Weather API: http://$ALB_URL/api/weather/London"
         else
-          echo "⚠️ Load balancer not ready yet. Check ingress status manually."
+          echo "⚠️ Load balancer not ready yet. Check ingress status manually:"
+          kubectl get ingress -n prod-team || true
+          kubectl describe ingress weather-app-ingress -n prod-team || true
         fi
 
-    - name: Run health checks
+    - name: Run health checks with retry
       run: |
-        echo "Running health checks..."
-        sleep 30
+        echo "Running health checks with retry..."
         
-        ALB_URL=$(kubectl get ingress weather-app-ingress -n prod-team -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        # Function to check endpoint with retry
+        check_endpoint_with_retry() {
+          local url=$1
+          local name=$2
+          local max_attempts=5
+          local attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "🔍 Checking $name (attempt $attempt/$max_attempts): $url"
+            
+            if curl -f -s --max-time 10 "$url" > /dev/null; then
+              echo "✅ $name check passed"
+              return 0
+            else
+              echo "❌ $name check failed on attempt $attempt"
+              
+              if [ $attempt -lt $max_attempts ]; then
+                echo "⏳ Waiting 30 seconds before retry..."
+                sleep 30
+              fi
+            fi
+            
+            ((attempt++))
+          done
+          
+          echo "❌ $name check failed after all attempts"
+          return 1
+        }
+        
+        # Get ALB URL with retry
+        for i in {1..5}; do
+          ALB_URL=$(kubectl get ingress weather-app-ingress -n prod-team -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          
+          if [ -n "$ALB_URL" ]; then
+            echo "✅ Found ALB URL: $ALB_URL"
+            break
+          else
+            echo "⏳ Waiting for ALB URL (attempt $i/5)..."
+            sleep 30
+          fi
+        done
         
         if [ -n "$ALB_URL" ]; then
+          echo "🧪 Running health checks..."
+          
           # Test API health
-          if curl -f -s "http://$ALB_URL/api/health" > /dev/null; then
-            echo "✅ API health check passed"
-          else
-            echo "❌ API health check failed"
-            exit 1
-          fi
+          check_endpoint_with_retry "http://$ALB_URL/api/health" "API Health"
           
           # Test weather endpoint
-          if curl -f -s "http://$ALB_URL/api/weather/London" > /dev/null; then
-            echo "✅ Weather API check passed"
-          else
-            echo "❌ Weather API check failed"
-            exit 1
-          fi
+          check_endpoint_with_retry "http://$ALB_URL/api/weather/London" "Weather API"
           
-          echo "🎉 All health checks passed! Your app is live!"
+          echo "🎉 All health checks completed! Your app should be live at:"
+          echo "📱 Frontend: http://$ALB_URL"
+          echo "🔧 API Health: http://$ALB_URL/api/health"
+          echo "🌤️  Weather API: http://$ALB_URL/api/weather/London"
         else
-          echo "⚠️ Skipping health checks - load balancer not ready"
+          echo "⚠️ Could not get ALB URL, skipping health checks"
+          echo "🔍 Manual check commands:"
+          echo "kubectl get ingress -n prod-team"
+          echo "kubectl get pods -n prod-team"
+          echo "kubectl get services -n prod-team"
         fi
