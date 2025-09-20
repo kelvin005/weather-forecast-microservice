@@ -153,7 +153,7 @@ jobs:
       id: outputs
       working-directory: ./infra
       run: |
-        echo "alb_role_arn=$(terraform output -raw alb_controller_role_arn)" >> $GITHUB_OUTPUT
+        echo "alb_role_arn=$(terraform output -raw alb_role_arn)" >> $GITHUB_OUTPUT
 
   # Job 4: Complete infrastructure deployment
   complete_infrastructure:
@@ -312,42 +312,50 @@ jobs:
         kubectl get nodes
         echo "✅ Connected to EKS cluster"
 
-    - name: Setup EKS OIDC Provider
+    - name: Get ALB Controller Role ARN
       run: |
-        echo "Setting up OIDC provider for EKS cluster..."
+        echo "=== Getting ALB Controller Role ARN ==="
         
-        # Get the OIDC issuer URL
-        OIDC_URL=$(aws eks describe-cluster --name ${{ needs.eks_infrastructure.outputs.cluster_name }} --region us-east-2 --query "cluster.identity.oidc.issuer" --output text)
-        echo "OIDC URL: $OIDC_URL"
+        # Try to get from Terraform output first
+        TERRAFORM_ROLE="${{ needs.iam_infrastructure.outputs.alb_role_arn }}"
+        echo "Terraform role output: '$TERRAFORM_ROLE'"
         
-        # Extract the OIDC ID
-        OIDC_ID=$(echo $OIDC_URL | cut -d '/' -f 5)
-        echo "OIDC ID: $OIDC_ID"
-        
-        # Check if OIDC provider already exists
-        if aws iam list-open-id-connect-providers --query "OpenIDConnectProviderList[?ends_with(Arn, ':oidc-provider/$OIDC_URL')]" --output text | grep -q "$OIDC_ID"; then
-          echo "✅ OIDC provider already exists"
+        if [ -n "$TERRAFORM_ROLE" ]; then
+          ALB_ROLE_ARN="$TERRAFORM_ROLE"
+          echo "✅ Using Terraform role: $ALB_ROLE_ARN"
         else
-          echo "Creating OIDC provider..."
+          echo "⚠️ Terraform role empty, getting from AWS directly..."
           
-          # Get the certificate thumbprint
-          THUMBPRINT=$(echo | openssl s_client -servername oidc.eks.us-east-2.amazonaws.com -showcerts -connect oidc.eks.us-east-2.amazonaws.com:443 2>&- | tac | sed -n '/-----END CERTIFICATE-----/,/-----BEGIN CERTIFICATE-----/p; /-----BEGIN CERTIFICATE-----/q' | tac | openssl x509 -fingerprint -sha1 -noout | sed 's/://g' | awk -F= '{print tolower($2)}')
+          # Get the role ARN directly from AWS
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          PROJECT_NAME="${{ needs.base_infrastructure.outputs.project_name }}"
           
-          # Create the OIDC provider
-          aws iam create-open-id-connect-provider \
-            --url $OIDC_URL \
-            --client-id-list sts.amazonaws.com \
-            --thumbprint-list $THUMBPRINT \
-            --region us-east-2 || echo "OIDC provider might already exist"
+          if [ -z "$PROJECT_NAME" ]; then
+            PROJECT_NAME="weather-forcast-application"
+          fi
           
-          echo "✅ OIDC provider created/verified"
+          ALB_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${PROJECT_NAME}-alb-controller-role"
+          echo "✅ Constructed role ARN: $ALB_ROLE_ARN"
+          
+          # Verify the role exists
+          if aws iam get-role --role-name "${PROJECT_NAME}-alb-controller-role" >/dev/null 2>&1; then
+            echo "✅ Role exists in AWS"
+          else
+            echo "❌ Role does not exist in AWS!"
+            echo "Available roles with 'alb' in name:"
+            aws iam list-roles --query 'Roles[?contains(RoleName, `alb`)].RoleName' --output table || true
+            exit 1
+          fi
         fi
+        
+        echo "ALB_ROLE_ARN=$ALB_ROLE_ARN" >> $GITHUB_ENV
+        echo "Final ALB Role ARN: $ALB_ROLE_ARN"
 
     - name: Install AWS Load Balancer Controller
       run: |
         echo "Installing AWS Load Balancer Controller..."
-        echo "Cluster: ${{ needs.eks_infrastructure.outputs.cluster_name }}"
-        echo "IAM Role: ${{ needs.iam_infrastructure.outputs.alb_role_arn }}"
+        echo "Cluster: weather-forcast-application-eks"
+        echo "IAM Role: $ALB_ROLE_ARN"
         echo "VPC ID: ${{ needs.base_infrastructure.outputs.vpc_id }}"
         
         # Add Helm repo
@@ -357,13 +365,13 @@ jobs:
         # Clean up any existing installation
         helm uninstall aws-load-balancer-controller -n kube-system --ignore-not-found || echo "No existing installation"
         
-        # Install ALB controller with Helm managing the service account
+        # Install ALB controller with the correct IAM role
         helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
           -n kube-system \
-          --set clusterName=${{ needs.eks_infrastructure.outputs.cluster_name }} \
+          --set clusterName=weather-forcast-application-eks \
           --set serviceAccount.create=true \
           --set serviceAccount.name=aws-load-balancer-controller \
-          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=${{ needs.iam_infrastructure.outputs.alb_role_arn }} \
+          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$ALB_ROLE_ARN \
           --set region=us-east-2 \
           --set vpcId=${{ needs.base_infrastructure.outputs.vpc_id }} \
           --wait \
@@ -371,8 +379,9 @@ jobs:
         
         echo "✅ AWS Load Balancer Controller installed"
         
-        # Verify installation
+        # Verify installation and service account
         kubectl get deployment aws-load-balancer-controller -n kube-system
+        kubectl get serviceaccount aws-load-balancer-controller -n kube-system -o yaml
         kubectl rollout status deployment aws-load-balancer-controller -n kube-system --timeout=300s
         echo "✅ ALB Controller is ready and running"
 
