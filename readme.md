@@ -5,7 +5,7 @@
 ![Application Demo](./images/weather-forcast-application-live-image.png)
 
 ## 🏗️ Architecture Overview
-(./images/weather forecast architecture.drawio.png)
+(./images/weather-forecast-architecture.drawio.png)
 
 ```
         
@@ -40,7 +40,7 @@ Supporting Services:
 - **Microservices Architecture**: Separate frontend and backend services
 - **Infrastructure as Code**: Complete AWS infrastructure defined in Terraform
 - **Container Orchestration**: Kubernetes deployment on AWS EKS with EC2 Node Groups
-- **Auto-scaling Load Balancer**: AWS ALB with automatic target registration
+- **Auto-scaling Load Balancer**: AWS ALB with automatic target registration 
 - **Service Discovery**: Kubernetes-native service mesh with ingress routing
 - **Secure Secrets Management**: Kubernetes secrets for API key management
 - **Health Monitoring**: Built-in health checks and monitoring endpoints
@@ -84,7 +84,7 @@ Supporting Services:
 ### 1. Clone and Setup
 ```bash
 git clone https://github.com/kelvin005/weather-forecast-microservice.git
-cd weather-microservices
+cd weather-forecast-microservice
 ```
 
 ### 2. Deploy Infrastructure
@@ -107,7 +107,7 @@ helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
   --set serviceAccount.create=true \
   --set serviceAccount.name=aws-load-balancer-controller \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<CONTROLLER_ROLE_ARN> \
-  --set clusterName=task-manager-eks \
+  --set clusterName=weather-forecast-microservice-eks \
   --set region=us-east-2
 ```
 
@@ -291,7 +291,7 @@ aws elbv2 describe-target-health --target-group-arn <TG_ARN>
 ### Technical Challenges Overcome
 
 1. **EKS Node Group Scheduling**: Resolved complex node group configuration and security group setup for proper pod scheduling
-2. **Service Discovery**: Debugged AWS Load Balancer Controller integration with existing Terraform-managed ALB resources  
+2. **Service Discovery**: Debugged AWS Load Balancer Controller integration with kubernetes manager ALB 
 3. **IAM Permissions**: Identified missing `ec2:CreateSecurityGroup` permission blocking ALB provisioning
 4. **DNS Resolution**: Fixed CoreDNS scheduling issues that prevented controller API authentication
 5. **Network Security**: Configured proper security group rules for ALB-to-Node communication
@@ -364,7 +364,7 @@ curl http://<ALB_ADDRESS>/api/health
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License .
 
 ## 🙏 Acknowledgments
 
