@@ -5,7 +5,7 @@
 ![Application Demo](./images/weather-forcast-application-live-image.png)
 
 ## 🏗️ Architecture Overview
-(./images/weather-forecast-architecture.drawio.png)
+[Application architecture image]( ./images/weather-forecast-architecture.drawio.png)
 
 ```
         
