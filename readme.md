@@ -6,7 +6,7 @@
 
 ## 🏗️ Architecture Overview
  Architecture Overview
-![Application architecture image](./images/weather-forecast-architecture.drawio.png)
+![Application architecture image](./images/Cloud-Native Application Deployment Flowchart(2).png)
 
 ```
 Supporting Services:
