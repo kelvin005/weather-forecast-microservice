@@ -22,13 +22,12 @@ spec:
           name: http
           protocol: TCP
         env:
-        # YOUR SECRET IS HERE - I kept it exactly as you had it!
         - name: OPENWEATHER_API_KEY
           valueFrom:
             secretKeyRef:
               name: weather-secrets
               key: OPENWEATHER_API_KEY
-        # Additional environment variables
+        
         - name: PORT
           value: "8080"
         - name: NODE_ENV
