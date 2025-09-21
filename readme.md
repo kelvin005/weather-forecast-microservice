@@ -5,10 +5,10 @@
 ![Application Demo](./images/weather-forcast-application-live-image.png)
 
 ## 🏗️ Architecture Overview
-![Application architecture image]( ./images/weather-forecast-architecture.drawio.png)
+ Architecture Overview
+![Application architecture image](./images/weather-forecast-architecture.drawio.png)
 
 ```
-        
 Supporting Services:
 - VPC: Network isolation
 - ECR: Container image storage  
